@@ -3,6 +3,7 @@ import { h } from 'vue'
 import axios from 'axios'
 
 import i18n from '../i18n'
+import { getFingerprint } from '../utils/fingerprint'
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 const {
@@ -20,6 +21,9 @@ const instance = axios.create({
 const apiFetch = async (path, options = {}) => {
     loading.value = true;
     try {
+        // Get browser fingerprint for request tracking
+        const fingerprint = await getFingerprint();
+
         const response = await instance.request(path, {
             method: options.method || 'GET',
             data: options.body || null,
@@ -29,6 +33,7 @@ const apiFetch = async (path, options = {}) => {
                 'x-user-access-token': userSettings.value.access_token,
                 'x-custom-auth': auth.value,
                 'x-admin-auth': adminAuth.value,
+                'x-fingerprint': fingerprint,
                 'Authorization': `Bearer ${jwt.value}`,
                 'Content-Type': 'application/json',
             },
@@ -36,7 +41,7 @@ const apiFetch = async (path, options = {}) => {
         if (response.status === 401 && path.startsWith("/admin")) {
             showAdminAuth.value = true;
         }
-        if (response.status === 401 && openSettings.value.auth) {
+        if (response.status === 401 && openSettings.value.needAuth) {
             showAuth.value = true;
         }
         if (response.status >= 300) {

@@ -14,6 +14,7 @@ import i18n from './i18n';
 import { email } from './email';
 import { scheduled } from './scheduled';
 import { getAdminPasswords, getPasswords, getBooleanValue, getStringArray } from './utils';
+import { checkAccessControl } from './ip_blacklist';
 
 const API_PATHS = [
 	"/api/",
@@ -48,6 +49,17 @@ app.use('/*', async (c, next) => {
 	const lang = c.req.raw.headers.get("x-lang");
 	if (lang) { c.set("lang", lang); }
 	const msgs = i18n.getMessages(lang || c.env.DEFAULT_LANG);
+
+	// check header x-custom-auth
+	const passwords = getPasswords(c);
+	if (!c.req.path.startsWith("/open_api") && !c.req.path.startsWith("/telegram/") && passwords && passwords.length > 0) {
+		const auth = c.req.raw.headers.get("x-custom-auth");
+		if (!auth || !passwords.includes(auth)) {
+			return c.text(msgs.CustomAuthPasswordMsg, 401)
+		}
+	}
+
+	// rate limit for specific endpoints
 	if (
 		c.req.path.startsWith("/api/new_address")
 		|| c.req.path.startsWith("/api/send_mail")
@@ -63,6 +75,11 @@ app.use('/*', async (c, next) => {
 			if (!success) {
 				return c.text(`IP=${reqIp} Rate limit exceeded for ${c.req.path}`, 429)
 			}
+		}
+		// Check access control (blacklist and daily limit)
+		const accessControlResponse = await checkAccessControl(c);
+		if (accessControlResponse) {
+			return accessControlResponse;
 		}
 	}
 	// webhook check
@@ -128,16 +145,6 @@ const checkoutUserRolePayload = async (
 
 // api auth
 app.use('/api/*', async (c, next) => {
-	// check header x-custom-auth
-	const passwords = getPasswords(c);
-	if (passwords && passwords.length > 0) {
-		const auth = c.req.raw.headers.get("x-custom-auth");
-		if (!auth || !passwords.includes(auth)) {
-			const lang = c.req.raw.headers.get("x-lang") || c.env.DEFAULT_LANG;
-			const messages = i18n.getMessages(lang);
-			return c.text(messages.CustomAuthPasswordMsg, 401)
-		}
-	}
 	if (c.req.path.startsWith("/api/new_address")) {
 		await checkUserPayload(c);
 		await next();

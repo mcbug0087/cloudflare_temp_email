@@ -51,7 +51,7 @@ def generate_random_name():
 def fetch_email_data(name):
     try:
         res = requests.post(
-            "https://<worker 域名>",
+            "https://<worker 域名>/admin/new_address",
             json={
                 "enablePrefix": True,
                 "name": name,

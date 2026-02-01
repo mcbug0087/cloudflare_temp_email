@@ -34,6 +34,13 @@ export type WebhookMail = {
     parsedHtml: string;
 }
 
+export type CustomSqlCleanup = {
+    id: string;           // Unique identifier
+    name: string;         // Cleanup task name
+    sql: string;          // Custom SQL statement (DELETE only)
+    enabled: boolean;     // Whether to enable auto cleanup
+}
+
 export type CleanupSettings = {
 
     enableMailsAutoCleanup: boolean | undefined;
@@ -48,6 +55,9 @@ export type CleanupSettings = {
     cleanInactiveAddressDays: number;
     enableUnboundAddressAutoCleanup: boolean | undefined;
     cleanUnboundAddressDays: number;
+    enableEmptyAddressAutoCleanup: boolean | undefined;
+    cleanEmptyAddressDays: number;
+    customSqlCleanupList: CustomSqlCleanup[] | undefined;
 }
 
 export class GeoData {
@@ -145,6 +155,9 @@ export type UserOauth2Settings = {
     redirectURL: string;
     logoutURL?: string;
     userEmailKey: string;
+    enableEmailFormat?: boolean;  // Enable email format transformation
+    userEmailFormat?: string;     // Regex pattern to match email
+    userEmailReplace?: string;    // Replacement template using $1, $2, etc.
     scope: string;
     enableMailAllowList?: boolean | undefined;
     mailAllowList?: string[] | undefined;

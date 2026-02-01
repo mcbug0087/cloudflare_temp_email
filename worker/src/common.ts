@@ -5,6 +5,7 @@ import { getBooleanValue, getDomains, getStringValue, getIntValue, getUserRoles,
 import { unbindTelegramByAddress } from './telegram_api/common';
 import { CONSTANTS } from './constants';
 import { AdminWebhookSettings, WebhookMail, WebhookSettings } from './models';
+import i18n from './i18n';
 
 const DEFAULT_NAME_REGEX = /[^a-z0-9]/g;
 
@@ -123,6 +124,7 @@ export const newAddress = async (
         addressPrefix = null,
         checkAllowDomains = true,
         enableCheckNameRegex = true,
+        sourceMeta = null,
     }: {
         name: string, domain: string | undefined | null,
         enablePrefix: boolean,
@@ -130,8 +132,10 @@ export const newAddress = async (
         addressPrefix?: string | undefined | null,
         checkAllowDomains?: boolean,
         enableCheckNameRegex?: boolean,
+        sourceMeta?: string | undefined | null,
     }
 ): Promise<{ address: string, jwt: string, password?: string | null }> => {
+    const msgs = i18n.getMessagesbyContext(c);
     // trim whitespace and remove special characters
     name = name.trim().replace(getNameRegex(c), '')
     // check name
@@ -151,10 +155,10 @@ export const newAddress = async (
     );
     // check name length
     if (name.length < minAddressLength) {
-        throw new Error(`Name too short (min ${minAddressLength})`);
+        throw new Error(`${msgs.NameTooShortMsg} (min ${minAddressLength})`);
     }
     if (name.length > maxAddressLength) {
-        throw new Error(`Name too long (max ${maxAddressLength})`);
+        throw new Error(`${msgs.NameTooLongMsg} (max ${maxAddressLength})`);
     }
     // create address with prefix
     if (typeof addressPrefix === "string") {
@@ -175,24 +179,35 @@ export const newAddress = async (
     }
     // check domain is valid
     if (!domain || !allowDomains.includes(domain)) {
-        throw new Error("Invalid domain")
+        throw new Error(msgs.InvalidDomainMsg)
     }
     // create address
     name = name + "@" + domain;
     try {
-        const { success } = await c.env.DB.prepare(
-            `INSERT INTO address(name) VALUES(?)`
-        ).bind(name).run();
-        if (!success) {
-            throw new Error("Failed to create address")
+        // Try insert with source_meta field first
+        const result = await c.env.DB.prepare(
+            `INSERT INTO address(name, source_meta) VALUES(?, ?)`
+        ).bind(name, sourceMeta).run();
+        if (!result.success) {
+            throw new Error(msgs.FailedCreateAddressMsg)
         }
         await updateAddressUpdatedAt(c, name);
     } catch (e) {
         const message = (e as Error).message;
-        if (message && message.includes("UNIQUE")) {
-            throw new Error("Address already exists")
+        // Fallback: source_meta field may not exist, try without it
+        if (message && message.includes("source_meta")) {
+            const result = await c.env.DB.prepare(
+                `INSERT INTO address(name) VALUES(?)`
+            ).bind(name).run();
+            if (!result.success) {
+                throw new Error(msgs.FailedCreateAddressMsg)
+            }
+            await updateAddressUpdatedAt(c, name);
+        } else if (message && message.includes("UNIQUE")) {
+            throw new Error(msgs.AddressAlreadyExistsMsg)
+        } else {
+            throw new Error(msgs.FailedCreateAddressMsg)
         }
-        throw new Error("Failed to create address")
     }
     const address_id = await c.env.DB.prepare(
         `SELECT id FROM address where name = ?`
@@ -234,8 +249,9 @@ export const cleanup = async (
     cleanType: string | undefined | null,
     cleanDays: number | undefined | null
 ): Promise<boolean> => {
+    const msgs = i18n.getMessagesbyContext(c);
     if (!cleanType || typeof cleanDays !== 'number' || cleanDays < 0 || cleanDays > 1000) {
-        throw new Error("Invalid cleanType or cleanDays")
+        throw new Error(msgs.InvalidCleanupConfigMsg)
     }
     console.log(`Cleanup ${cleanType} before ${cleanDays} days`);
     switch (cleanType) {
@@ -273,8 +289,15 @@ export const cleanup = async (
                 DELETE FROM sendbox WHERE created_at < datetime('now', '-${cleanDays} day')`
             ).run();
             break;
+        case "emptyAddress":
+            // Delete addresses that have no emails and were created more than N days ago
+            await batchDeleteAddressWithData(
+                c,
+                `name NOT IN (SELECT DISTINCT address FROM raw_mails WHERE address IS NOT NULL) AND created_at < datetime('now', '-${cleanDays} day')`
+            )
+            break;
         default:
-            throw new Error("Invalid cleanType")
+            throw new Error(msgs.InvalidCleanTypeMsg)
     }
     return true;
 }
@@ -316,11 +339,12 @@ export const deleteAddressWithData = async (
     address: string | undefined | null,
     address_id: number | undefined | null
 ): Promise<boolean> => {
+    const msgs = i18n.getMessagesbyContext(c);
     if (!getBooleanValue(c.env.ENABLE_USER_DELETE_EMAIL)) {
-        throw new Error("Delete email is disabled")
+        throw new Error(msgs.UserDeleteEmailDisabledMsg)
     }
     if (!address && !address_id) {
-        throw new Error("Address or address_id required")
+        throw new Error(msgs.RequiredFieldMsg)
     }
     // get address_id or address
     if (!address_id) {
@@ -334,7 +358,7 @@ export const deleteAddressWithData = async (
     }
     // check address again
     if (!address || !address_id) {
-        throw new Error("Can't find address");
+        throw new Error(msgs.AddressNotFoundMsg);
     }
     // unbind telegram
     await unbindTelegramByAddress(c, address);
@@ -358,7 +382,7 @@ export const deleteAddressWithData = async (
         `DELETE FROM address WHERE name = ? `
     ).bind(address).run();
     if (!success || !mailSuccess || !sendboxSuccess || !addressSuccess || !sendAccess || !autoReplySuccess) {
-        throw new Error("Failed to delete address")
+        throw new Error(msgs.OperationFailedMsg)
     }
     return true;
 }
@@ -369,6 +393,7 @@ export const handleListQuery = async (
     limit: string | number | undefined | null,
     offset: string | number | undefined | null
 ): Promise<Response> => {
+    const msgs = i18n.getMessagesbyContext(c);
     if (typeof limit === "string") {
         limit = parseInt(limit);
     }
@@ -376,10 +401,10 @@ export const handleListQuery = async (
         offset = parseInt(offset);
     }
     if (!limit || limit < 0 || limit > 100) {
-        return c.text("Invalid limit", 400)
+        return c.text(msgs.InvalidLimitMsg, 400)
     }
     if (offset == null || offset == undefined || offset < 0) {
-        return c.text("Invalid offset", 400)
+        return c.text(msgs.InvalidOffsetMsg, 400)
     }
     const resultsQuery = `${query} order by id desc limit ? offset ?`;
     const { results } = await c.env.DB.prepare(resultsQuery).bind(

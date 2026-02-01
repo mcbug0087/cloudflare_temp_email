@@ -1,7 +1,7 @@
 import { Context, Hono } from 'hono'
 
 import i18n from '../i18n';
-import { getBooleanValue, getJsonSetting, checkCfTurnstile, getStringValue, getSplitStringListValue } from '../utils';
+import { getBooleanValue, getJsonSetting, checkCfTurnstile, getStringValue, getSplitStringListValue, isAddressCountLimitReached } from '../utils';
 import { newAddress, handleListQuery, deleteAddressWithData, getAddressPrefix, getAllowDomains, updateAddressUpdatedAt, generateRandomName } from '../common'
 import { CONSTANTS } from '../constants'
 import auto_reply from './auto_reply'
@@ -45,8 +45,7 @@ api.get('/api/mail/:mail_id', async (c) => {
 })
 
 api.delete('/api/mails/:id', async (c) => {
-    const lang = c.get("lang") || c.env.DEFAULT_LANG;
-    const msgs = i18n.getMessages(lang);
+    const msgs = i18n.getMessagesbyContext(c);
     if (!getBooleanValue(c.env.ENABLE_USER_DELETE_EMAIL)) {
         return c.text(msgs.UserDeleteEmailDisabledMsg, 403)
     }
@@ -64,8 +63,7 @@ api.delete('/api/mails/:id', async (c) => {
 api.get('/api/settings', async (c) => {
     const { address, address_id } = c.get("jwtPayload")
     const user_role = c.get("userRolePayload")
-    const lang = c.get("lang") || c.env.DEFAULT_LANG;
-    const msgs = i18n.getMessages(lang);
+    const msgs = i18n.getMessagesbyContext(c);
     if (address_id && address_id > 0) {
         try {
             const db_address_id = await c.env.DB.prepare(
@@ -106,16 +104,26 @@ api.get('/api/settings', async (c) => {
 })
 
 api.post('/api/new_address', async (c) => {
-    const lang = c.get("lang") || c.env.DEFAULT_LANG;
-    const msgs = i18n.getMessages(lang);
+    const msgs = i18n.getMessagesbyContext(c);
+    const userPayload = c.get("userPayload");
+
     if (getBooleanValue(c.env.DISABLE_ANONYMOUS_USER_CREATE_EMAIL)
-        && !c.get("userPayload")
+        && !userPayload
     ) {
         return c.text(msgs.NewAddressAnonymousDisabledMsg, 403)
     }
     if (!getBooleanValue(c.env.ENABLE_USER_CREATE_EMAIL)) {
         return c.text(msgs.NewAddressDisabledMsg, 403)
     }
+
+    // 如果启用了禁止匿名创建，且用户已登录，检查地址数量限制
+    if (getBooleanValue(c.env.DISABLE_ANONYMOUS_USER_CREATE_EMAIL) && userPayload) {
+        const userRole = c.get("userRolePayload");
+        if (await isAddressCountLimitReached(c, userPayload.user_id, userRole)) {
+            return c.text(msgs.MaxAddressCountReachedMsg, 400)
+        }
+    }
+
     // eslint-disable-next-line prefer-const
     let { name, domain, cf_token } = await c.req.json();
     // check cf turnstile
@@ -144,11 +152,17 @@ api.post('/api/new_address', async (c) => {
     }
     try {
         const addressPrefix = await getAddressPrefix(c);
+        // Get client IP for source tracking
+        const sourceMeta = c.req.header('CF-Connecting-IP')
+            || c.req.header('X-Forwarded-For')?.split(',')[0]?.trim()
+            || c.req.header('X-Real-IP')
+            || 'web:unknown';
         const res = await newAddress(c, {
             name, domain,
             enablePrefix: true,
             checkLengthByConfig: true,
-            addressPrefix
+            addressPrefix,
+            sourceMeta
         });
         return c.json(res);
     } catch (e) {
@@ -165,8 +179,7 @@ api.delete('/api/delete_address', async (c) => {
 })
 
 api.delete('/api/clear_inbox', async (c) => {
-    const lang = c.get("lang") || c.env.DEFAULT_LANG;
-    const msgs = i18n.getMessages(lang);
+    const msgs = i18n.getMessagesbyContext(c);
     if (!getBooleanValue(c.env.ENABLE_USER_DELETE_EMAIL)) {
         return c.text(msgs.UserDeleteEmailDisabledMsg, 403)
     }
@@ -175,7 +188,7 @@ api.delete('/api/clear_inbox', async (c) => {
         `DELETE FROM raw_mails WHERE address = ?`
     ).bind(address).run();
     if (!success) {
-        return c.text("Failed to clear inbox", 500)
+        return c.text(msgs.FailedClearInboxMsg, 500)
     }
     return c.json({
         success: success
@@ -183,8 +196,7 @@ api.delete('/api/clear_inbox', async (c) => {
 })
 
 api.delete('/api/clear_sent_items', async (c) => {
-    const lang = c.get("lang") || c.env.DEFAULT_LANG;
-    const msgs = i18n.getMessages(lang);
+    const msgs = i18n.getMessagesbyContext(c);
     if (!getBooleanValue(c.env.ENABLE_USER_DELETE_EMAIL)) {
         return c.text(msgs.UserDeleteEmailDisabledMsg, 403)
     }
@@ -193,7 +205,7 @@ api.delete('/api/clear_sent_items', async (c) => {
         `DELETE FROM sendbox WHERE address = ?`
     ).bind(address).run();
     if (!success) {
-        return c.text("Failed to clear sent items", 500)
+        return c.text(msgs.FailedClearSentItemsMsg, 500)
     }
     return c.json({
         success: success
